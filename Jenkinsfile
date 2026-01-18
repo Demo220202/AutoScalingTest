@@ -238,9 +238,9 @@ pipeline {
         DATE_TAG = "$BUILD_TIMESTAMP"
     }
 
-//     tools {
-//         terraform 'terraform'
-//     }
+    tools {
+        terraform 'Terraform_1.5.7'
+    }
 
     stages {
 
