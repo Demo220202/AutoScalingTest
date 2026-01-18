@@ -234,13 +234,14 @@ pipeline {
     }
 
     environment {
+        PATH = "/opt/homebrew/bin:${env.PATH}"
         SleepDuration = 20
         DATE_TAG = "$BUILD_TIMESTAMP"
     }
 
-    tools {
-        terraform 'Terraform_1.5.7'
-    }
+//     tools {
+//         terraform 'Terraform_1.5.7'
+//     }
 
     stages {
 
