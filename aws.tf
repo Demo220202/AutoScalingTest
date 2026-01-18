@@ -3,7 +3,7 @@ provider "aws" {
   profile = "Aditya-demo"
 }
 resource "aws_ami_from_instance" "autoscaling" {
-  name               = "${var.ASG_NAME}-${var.DATE}"
+  name               = "pf-test-${var.DATE}"
   source_instance_id = "${var.INSTANCE_ID}"
 }
 
