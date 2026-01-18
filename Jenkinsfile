@@ -278,60 +278,84 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
 
         /* ---------------- Instance Refresh ---------------- */
 
-        def refreshPrefs = params.IS_PROD
-          ? "MinHealthyPercentage=90,InstanceWarmup=600"
-          : "MinHealthyPercentage=50,InstanceWarmup=300"
+        def asgSize = sh(
+            returnStdout: true,
+            script: """
+              aws autoscaling describe-auto-scaling-groups \
+                --auto-scaling-group-names ${ASG_NAME} \
+                --region ${ASG_REGION} |
+              jq '.AutoScalingGroups[0].DesiredCapacity'
+            """
+        ).trim().toInteger()
+
+        def minHealthy = params.IS_PROD
+          ? (asgSize <= 2 ? 0 : asgSize < 5 ? 50 : 90)
+          : 0
+
+        echo "ASG size=${asgSize}, MinHealthyPercentage=${minHealthy}"
 
         sh """
           aws autoscaling start-instance-refresh \
             --auto-scaling-group-name ${ASG_NAME} \
-            --preferences ${refreshPrefs} \
+            --preferences MinHealthyPercentage=${minHealthy},InstanceWarmup=300 \
             --region ${ASG_REGION}
         """
 
         /* ---------------- Refresh Tracking ---------------- */
 
+        int lastPercent = -1
+        int stuckCount = 0
+
         timeout(time: params.IS_PROD ? 30 : 15, unit: 'MINUTES') {
             while (true) {
                 sleep env.SleepDuration.toInteger()
 
-                def status = sh(
+                def refreshInfo = sh(
                     returnStdout: true,
                     script: """
                       aws autoscaling describe-instance-refreshes \
                         --auto-scaling-group-name ${ASG_NAME} \
                         --region ${ASG_REGION} |
-                      jq -r '.InstanceRefreshes[0].Status'
+                      jq '.InstanceRefreshes[0]'
                     """
                 ).trim()
 
-                echo "Instance Refresh status for ${ASG_NAME}: ${status}"
+                def status = sh(
+                    returnStdout: true,
+                    script: "echo '${refreshInfo}' | jq -r .Status"
+                ).trim()
+
+                def percent = sh(
+                    returnStdout: true,
+                    script: "echo '${refreshInfo}' | jq -r '.PercentageComplete // 0'"
+                ).trim().toInteger()
+
+                def remaining = sh(
+                    returnStdout: true,
+                    script: "echo '${refreshInfo}' | jq -r '.InstancesToUpdate // 0'"
+                ).trim()
+
+                echo "Refresh status=${status}, progress=${percent}%, remaining=${remaining}"
 
                 if (status == "Successful") break
                 if (status in ["Failed", "Cancelled"]) {
                     rollbackRequired = true
-                    error "Instance refresh failed"
+                    error "Instance refresh ${status}"
                 }
 
-                /* -------- Alarm-based rollback (optional) -------- */
-                if (params.IS_PROD && params.ROLLBACK_ALARM_NAME) {
-                    def alarmState = sh(
-                        returnStdout: true,
-                        script: """
-                          aws cloudwatch describe-alarms \
-                            --alarm-names ${params.ROLLBACK_ALARM_NAME} \
-                            --region ${ASG_REGION} |
-                          jq -r '.MetricAlarms[0].StateValue'
-                        """
-                    ).trim()
-
-                    if (alarmState == "ALARM") {
+                if (percent == lastPercent) {
+                    stuckCount++
+                    if (stuckCount >= 6) {
                         rollbackRequired = true
-                        error "Rollback alarm triggered"
+                        error "Instance refresh stuck at ${percent}%"
                     }
+                } else {
+                    stuckCount = 0
+                    lastPercent = percent
                 }
             }
         }
+
 
         echo "AMI deployment successful for ${ASG_NAME}"
 
