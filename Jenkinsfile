@@ -1,215 +1,369 @@
+// def deployToASG(String asgName, String ltName, int warmPoolSize) {
+//
+//     def ASG_NAME = asgName
+//     def LAUNCHTEMPLATE_NAME = ltName
+//     def WARM_POOL_SIZE = warmPoolSize
+//
+//     def rollback = false
+//     def ASG_new_desired = 0
+//     def LT_latest_version = ""
+//     def LT_default_version = ""
+//
+//     def ORIGINAL_desired = 0
+//     def ORIGINAL_min = 0
+//
+//     try {
+//
+//         def initialASG = sh(
+//             returnStdout: true,
+//             script: "aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names ${ASG_NAME} --region ${ASG_REGION}"
+//         ).trim()
+//
+//         ORIGINAL_desired = sh(
+//             returnStdout: true,
+//             script: "echo '${initialASG}' | jq .AutoScalingGroups[0].DesiredCapacity"
+//         ).trim().toInteger()
+//
+//         ORIGINAL_min = sh(
+//             returnStdout: true,
+//             script: "echo '${initialASG}' | jq .AutoScalingGroups[0].MinSize"
+//         ).trim().toInteger()
+//
+//         echo "================================================"
+//         echo "Deploying AMI ${env.AMI_ID} to ASG: ${ASG_NAME}"
+//         echo "================================================"
+//
+//         /* ---------- Launch Template Update ---------- */
+//         sh """
+//           aws ec2 create-launch-template-version \
+//             --launch-template-name ${LAUNCHTEMPLATE_NAME} \
+//             --source-version '\$Default' \
+//             --version-description "AMI update ${DATE_TAG}" \
+//             --launch-template-data ImageId=${env.AMI_ID} \
+//             --region ${ASG_REGION}
+//         """
+//
+//         sh """
+//           aws ec2 describe-launch-template-versions \
+//             --launch-template-name ${LAUNCHTEMPLATE_NAME} \
+//             --region ${ASG_REGION} > lt_described_${ASG_NAME}.out
+//         """
+//
+//         LT_latest_version = sh(
+//             returnStdout: true,
+//             script: "jq -r '.LaunchTemplateVersions | max_by(.VersionNumber) | .VersionNumber' lt_described_${ASG_NAME}.out"
+//         ).trim()
+//
+//         LT_default_version = sh(
+//             returnStdout: true,
+//             script: "jq -r '.LaunchTemplateVersions[] | select(.DefaultVersion==true) | .VersionNumber' lt_described_${ASG_NAME}.out"
+//         ).trim()
+//
+//         if (LT_latest_version == LT_default_version) {
+//             error "Latest Launch Template version already default"
+//         }
+//
+//         sh """
+//           aws ec2 modify-launch-template \
+//             --launch-template-name ${LAUNCHTEMPLATE_NAME} \
+//             --default-version ${LT_latest_version} \
+//             --region ${ASG_REGION}
+//         """
+//
+//         /* ---------- Warm Pool ---------- */
+//         sh """
+//           aws autoscaling put-warm-pool \
+//             --auto-scaling-group-name ${ASG_NAME} \
+//             --min-size ${WARM_POOL_SIZE} \
+//             --max-group-prepared-capacity ${WARM_POOL_SIZE} \
+//             --region ${ASG_REGION}
+//         """
+//
+//         /* ---------- Scale Up ---------- */
+//         def ASG_Described = sh(
+//             returnStdout: true,
+//             script: "aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names ${ASG_NAME} --region ${ASG_REGION}"
+//         ).trim()
+//
+//         def CURRENT_desired = sh(
+//             returnStdout: true,
+//             script: "echo '${ASG_Described}' | jq .AutoScalingGroups[0].DesiredCapacity"
+//         ).trim().toInteger()
+//
+//         def CURRENT_max = sh(
+//             returnStdout: true,
+//             script: "echo '${ASG_Described}' | jq .AutoScalingGroups[0].MaxSize"
+//         ).trim().toInteger()
+//
+//         ASG_new_desired = CURRENT_desired * 2
+//
+//         sh """
+//           aws autoscaling update-auto-scaling-group \
+//             --auto-scaling-group-name ${ASG_NAME} \
+//             --min-size ${ASG_new_desired} \
+//             --max-size ${Math.max(CURRENT_max, ASG_new_desired + 1)} \
+//             --desired-capacity ${ASG_new_desired} \
+//             --region ${ASG_REGION}
+//         """
+//
+//         /* ---------- EC2 Health ---------- */
+//         if (!params.SKIP_HEALTHCHECK) {
+//             timeout(time: 10, unit: 'MINUTES') {
+//                 while (true) {
+//                     sleep env.SleepDuration.toInteger()
+//
+//                     def healthy = sh(
+//                         returnStdout: true,
+//                         script: """
+//                           aws autoscaling describe-auto-scaling-groups \
+//                             --auto-scaling-group-names ${ASG_NAME} \
+//                             --region ${ASG_REGION} |
+//                           jq '[.AutoScalingGroups[0].Instances[] |
+//                               select(.HealthStatus=="Healthy" and .LifecycleState=="InService")] | length'
+//                         """
+//                     ).trim().toInteger()
+//
+//                     echo "EC2 Healthy: ${healthy}/${ASG_new_desired}"
+//                     if (healthy >= ASG_new_desired) break
+//                 }
+//             }
+//         } else {
+//             echo "SKIPPING EC2 health check (test mode)"
+//         }
+//
+//         /* ---------- Target Group Health ---------- */
+//         def TG_ARN = sh(
+//             returnStdout: true,
+//             script: """
+//               aws autoscaling describe-auto-scaling-groups \
+//                 --auto-scaling-group-names ${ASG_NAME} \
+//                 --region ${ASG_REGION} |
+//               jq -r '.AutoScalingGroups[0].TargetGroupARNs[0] // empty'
+//             """
+//         ).trim()
+//
+//         if (TG_ARN && !params.SKIP_HEALTHCHECK) {
+//             timeout(time: 10, unit: 'MINUTES') {
+//                 while (true) {
+//                     sleep env.SleepDuration.toInteger()
+//
+//                     def TG_Healthy = sh(
+//                         returnStdout: true,
+//                         script: """
+//                           aws elbv2 describe-target-health \
+//                             --target-group-arn ${TG_ARN} \
+//                             --region ${ASG_REGION} |
+//                           jq '[.TargetHealthDescriptions[] |
+//                               select(.TargetHealth.State=="healthy")] | length'
+//                         """
+//                     ).trim().toInteger()
+//
+//                     echo "TG Healthy: ${TG_Healthy}/${ASG_new_desired}"
+//                     if (TG_Healthy >= ASG_new_desired) break
+//                 }
+//             }
+//         } else if (TG_ARN) {
+//             echo "⚠️ SKIPPING Target Group health check (test mode)"
+//         }
+//
+//
+//     } catch (err) {
+//         rollback = true
+//         echo "Failure for ASG: ${ASG_NAME}"
+//         echo err.toString()
+//     } finally {
+//         echo "Cleaning up temporary files for ASG: ${ASG_NAME}"
+//
+//         sh """
+//           rm -f lt_described_${ASG_NAME}.out || true
+//         """
+//     }
+//
+//     if (rollback) {
+//         echo "Rolling back ASG: ${ASG_NAME}"
+//
+//         sh """
+//           aws ec2 modify-launch-template \
+//             --launch-template-name ${LAUNCHTEMPLATE_NAME} \
+//             --default-version ${LT_default_version} \
+//             --region ${ASG_REGION}
+//         """
+//
+//         sh """
+//           aws autoscaling update-auto-scaling-group \
+//             --auto-scaling-group-name ${ASG_NAME} \
+//             --desired-capacity ${ORIGINAL_desired} \
+//             --min-size ${ORIGINAL_min} \
+//             --region ${ASG_REGION}
+//         """
+//
+//         error "Rollback completed for ${ASG_NAME}"
+//     }
+//
+//     sh """
+//       aws autoscaling update-auto-scaling-group \
+//         --auto-scaling-group-name ${ASG_NAME} \
+//         --desired-capacity ${ORIGINAL_desired} \
+//         --min-size ${ORIGINAL_min} \
+//         --region ${ASG_REGION}
+//     """
+//
+//     echo "Deployment completed for ASG: ${ASG_NAME}"
+// }
+
+
 def deployToASG(String asgName, String ltName, int warmPoolSize) {
 
+    def rollbackRequired = false
     def ASG_NAME = asgName
-    def LAUNCHTEMPLATE_NAME = ltName
-    def WARM_POOL_SIZE = warmPoolSize
+    def LT_NAME = ltName
 
-    def rollback = false
-    def ASG_new_desired = 0
-    def LT_latest_version = ""
-    def LT_default_version = ""
-
-    def ORIGINAL_desired = 0
-    def ORIGINAL_min = 0
+    def ORIGINAL_LT_VERSION = ""
+    def NEW_LT_VERSION = ""
 
     try {
+        echo "============================================"
+        echo "Deploying AMI ${env.AMI_ID} to ASG ${ASG_NAME}"
+        echo "============================================"
 
-        def initialASG = sh(
-            returnStdout: true,
-            script: "aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names ${ASG_NAME} --region ${ASG_REGION}"
-        ).trim()
+        /* ---------------- Launch Template ---------------- */
 
-        ORIGINAL_desired = sh(
-            returnStdout: true,
-            script: "echo '${initialASG}' | jq .AutoScalingGroups[0].DesiredCapacity"
-        ).trim().toInteger()
-
-        ORIGINAL_min = sh(
-            returnStdout: true,
-            script: "echo '${initialASG}' | jq .AutoScalingGroups[0].MinSize"
-        ).trim().toInteger()
-
-        echo "================================================"
-        echo "Deploying AMI ${env.AMI_ID} to ASG: ${ASG_NAME}"
-        echo "================================================"
-
-        /* ---------- Launch Template Update ---------- */
-        sh """
-          aws ec2 create-launch-template-version \
-            --launch-template-name ${LAUNCHTEMPLATE_NAME} \
-            --source-version '\$Default' \
-            --version-description "AMI update ${DATE_TAG}" \
-            --launch-template-data ImageId=${env.AMI_ID} \
-            --region ${ASG_REGION}
-        """
-
-        sh """
-          aws ec2 describe-launch-template-versions \
-            --launch-template-name ${LAUNCHTEMPLATE_NAME} \
-            --region ${ASG_REGION} > lt_described_${ASG_NAME}.out
-        """
-
-        LT_latest_version = sh(
-            returnStdout: true,
-            script: "jq -r '.LaunchTemplateVersions | max_by(.VersionNumber) | .VersionNumber' lt_described_${ASG_NAME}.out"
-        ).trim()
-
-        LT_default_version = sh(
-            returnStdout: true,
-            script: "jq -r '.LaunchTemplateVersions[] | select(.DefaultVersion==true) | .VersionNumber' lt_described_${ASG_NAME}.out"
-        ).trim()
-
-        if (LT_latest_version == LT_default_version) {
-            error "Latest Launch Template version already default"
-        }
-
-        sh """
-          aws ec2 modify-launch-template \
-            --launch-template-name ${LAUNCHTEMPLATE_NAME} \
-            --default-version ${LT_latest_version} \
-            --region ${ASG_REGION}
-        """
-
-        /* ---------- Warm Pool ---------- */
-        sh """
-          aws autoscaling put-warm-pool \
-            --auto-scaling-group-name ${ASG_NAME} \
-            --min-size ${WARM_POOL_SIZE} \
-            --max-group-prepared-capacity ${WARM_POOL_SIZE} \
-            --region ${ASG_REGION}
-        """
-
-        /* ---------- Scale Up ---------- */
-        def ASG_Described = sh(
-            returnStdout: true,
-            script: "aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names ${ASG_NAME} --region ${ASG_REGION}"
-        ).trim()
-
-        def CURRENT_desired = sh(
-            returnStdout: true,
-            script: "echo '${ASG_Described}' | jq .AutoScalingGroups[0].DesiredCapacity"
-        ).trim().toInteger()
-
-        def CURRENT_max = sh(
-            returnStdout: true,
-            script: "echo '${ASG_Described}' | jq .AutoScalingGroups[0].MaxSize"
-        ).trim().toInteger()
-
-        ASG_new_desired = CURRENT_desired * 2
-
-        sh """
-          aws autoscaling update-auto-scaling-group \
-            --auto-scaling-group-name ${ASG_NAME} \
-            --min-size ${ASG_new_desired} \
-            --max-size ${Math.max(CURRENT_max, ASG_new_desired + 1)} \
-            --desired-capacity ${ASG_new_desired} \
-            --region ${ASG_REGION}
-        """
-
-        /* ---------- EC2 Health ---------- */
-        if (!params.SKIP_HEALTHCHECK) {
-            timeout(time: 10, unit: 'MINUTES') {
-                while (true) {
-                    sleep env.SleepDuration.toInteger()
-
-                    def healthy = sh(
-                        returnStdout: true,
-                        script: """
-                          aws autoscaling describe-auto-scaling-groups \
-                            --auto-scaling-group-names ${ASG_NAME} \
-                            --region ${ASG_REGION} |
-                          jq '[.AutoScalingGroups[0].Instances[] |
-                              select(.HealthStatus=="Healthy" and .LifecycleState=="InService")] | length'
-                        """
-                    ).trim().toInteger()
-
-                    echo "EC2 Healthy: ${healthy}/${ASG_new_desired}"
-                    if (healthy >= ASG_new_desired) break
-                }
-            }
-        } else {
-            echo "SKIPPING EC2 health check (test mode)"
-        }
-
-        /* ---------- Target Group Health ---------- */
-        def TG_ARN = sh(
+        ORIGINAL_LT_VERSION = sh(
             returnStdout: true,
             script: """
-              aws autoscaling describe-auto-scaling-groups \
-                --auto-scaling-group-names ${ASG_NAME} \
+              aws ec2 describe-launch-templates \
+                --launch-template-names ${LT_NAME} \
                 --region ${ASG_REGION} |
-              jq -r '.AutoScalingGroups[0].TargetGroupARNs[0] // empty'
+              jq -r '.LaunchTemplates[0].DefaultVersionNumber'
             """
         ).trim()
 
-        if (TG_ARN && !params.SKIP_HEALTHCHECK) {
-            timeout(time: 10, unit: 'MINUTES') {
-                while (true) {
-                    sleep env.SleepDuration.toInteger()
-
-                    def TG_Healthy = sh(
-                        returnStdout: true,
-                        script: """
-                          aws elbv2 describe-target-health \
-                            --target-group-arn ${TG_ARN} \
-                            --region ${ASG_REGION} |
-                          jq '[.TargetHealthDescriptions[] |
-                              select(.TargetHealth.State=="healthy")] | length'
-                        """
-                    ).trim().toInteger()
-
-                    echo "TG Healthy: ${TG_Healthy}/${ASG_new_desired}"
-                    if (TG_Healthy >= ASG_new_desired) break
-                }
-            }
-        } else if (TG_ARN) {
-            echo "⚠️ SKIPPING Target Group health check (test mode)"
-        }
-
-
-    } catch (err) {
-        rollback = true
-        echo "Failure for ASG: ${ASG_NAME}"
-        echo err.toString()
-    } finally {
-        echo "Cleaning up temporary files for ASG: ${ASG_NAME}"
-
         sh """
-          rm -f lt_described_${ASG_NAME}.out || true
+          aws ec2 create-launch-template-version \
+            --launch-template-name ${LT_NAME} \
+            --source-version ${ORIGINAL_LT_VERSION} \
+            --launch-template-data ImageId=${env.AMI_ID} \
+            --version-description "AMI rollout ${DATE_TAG}" \
+            --region ${ASG_REGION}
         """
-    }
 
-    if (rollback) {
-        echo "Rolling back ASG: ${ASG_NAME}"
+        NEW_LT_VERSION = sh(
+            returnStdout: true,
+            script: """
+              aws ec2 describe-launch-template-versions \
+                --launch-template-name ${LT_NAME} \
+                --region ${ASG_REGION} |
+              jq -r '.LaunchTemplateVersions | max_by(.VersionNumber).VersionNumber'
+            """
+        ).trim()
 
         sh """
           aws ec2 modify-launch-template \
-            --launch-template-name ${LAUNCHTEMPLATE_NAME} \
-            --default-version ${LT_default_version} \
+            --launch-template-name ${LT_NAME} \
+            --default-version ${NEW_LT_VERSION} \
+            --region ${ASG_REGION}
+        """
+
+        /* ---------------- Warm Pool (safe) ---------------- */
+
+        if (warmPoolSize > 0) {
+            sh """
+              aws autoscaling put-warm-pool \
+                --auto-scaling-group-name ${ASG_NAME} \
+                --min-size ${warmPoolSize} \
+                --max-group-prepared-capacity ${warmPoolSize} \
+                --region ${ASG_REGION}
+            """
+        }
+
+        /* ---------------- Instance Refresh ---------------- */
+
+        def refreshPrefs = params.IS_PROD
+          ? "MinHealthyPercentage=90,InstanceWarmup=600"
+          : "MinHealthyPercentage=50,InstanceWarmup=300"
+
+        sh """
+          aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name ${ASG_NAME} \
+            --preferences ${refreshPrefs} \
+            --region ${ASG_REGION}
+        """
+
+        /* ---------------- Refresh Tracking ---------------- */
+
+        timeout(time: params.IS_PROD ? 30 : 15, unit: 'MINUTES') {
+            while (true) {
+                sleep env.SleepDuration.toInteger()
+
+                def status = sh(
+                    returnStdout: true,
+                    script: """
+                      aws autoscaling describe-instance-refreshes \
+                        --auto-scaling-group-name ${ASG_NAME} \
+                        --region ${ASG_REGION} |
+                      jq -r '.InstanceRefreshes[0].Status'
+                    """
+                ).trim()
+
+                echo "Instance Refresh status for ${ASG_NAME}: ${status}"
+
+                if (status == "Successful") break
+                if (status in ["Failed", "Cancelled"]) {
+                    rollbackRequired = true
+                    error "Instance refresh failed"
+                }
+
+                /* -------- Alarm-based rollback (optional) -------- */
+                if (params.IS_PROD && params.ROLLBACK_ALARM_NAME) {
+                    def alarmState = sh(
+                        returnStdout: true,
+                        script: """
+                          aws cloudwatch describe-alarms \
+                            --alarm-names ${params.ROLLBACK_ALARM_NAME} \
+                            --region ${ASG_REGION} |
+                          jq -r '.MetricAlarms[0].StateValue'
+                        """
+                    ).trim()
+
+                    if (alarmState == "ALARM") {
+                        rollbackRequired = true
+                        error "Rollback alarm triggered"
+                    }
+                }
+            }
+        }
+
+        echo "AMI deployment successful for ${ASG_NAME}"
+
+    } catch (err) {
+        rollbackRequired = true
+        echo "Deployment failed for ${ASG_NAME}: ${err}"
+    }
+
+    /* ---------------- Rollback ---------------- */
+
+    if (rollbackRequired) {
+        echo "Rolling back ASG ${ASG_NAME}"
+
+        sh """
+          aws ec2 modify-launch-template \
+            --launch-template-name ${LT_NAME} \
+            --default-version ${ORIGINAL_LT_VERSION} \
             --region ${ASG_REGION}
         """
 
         sh """
-          aws autoscaling update-auto-scaling-group \
+          aws autoscaling start-instance-refresh \
             --auto-scaling-group-name ${ASG_NAME} \
-            --desired-capacity ${ORIGINAL_desired} \
-            --min-size ${ORIGINAL_min} \
             --region ${ASG_REGION}
         """
 
         error "Rollback completed for ${ASG_NAME}"
     }
-
-    sh """
-      aws autoscaling update-auto-scaling-group \
-        --auto-scaling-group-name ${ASG_NAME} \
-        --desired-capacity ${ORIGINAL_desired} \
-        --min-size ${ORIGINAL_min} \
-        --region ${ASG_REGION}
-    """
-
-    echo "Deployment completed for ASG: ${ASG_NAME}"
 }
+
+
+
 
 
 pipeline {
