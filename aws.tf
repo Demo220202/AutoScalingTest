@@ -12,8 +12,8 @@ output "autoscaling_id" {
 }
 variable "ASG_Region" {
 }
-variable "ASG_NAME" {
-  }
+# variable "ASG_NAME" {
+#   }
 variable "DATE" {
   }
 variable "INSTANCE_ID" {
