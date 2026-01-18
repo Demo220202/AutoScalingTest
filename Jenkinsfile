@@ -296,71 +296,68 @@ pipeline {
 
 
         stage('Deploy AMI to Fleets (Parallel)') {
-
-            withCredentials([[
-                $class: 'AmazonWebServicesCredentialsBinding',
-                credentialsId: 'aditya-demo',
-                accessKeyVariable: 'AWS_ACCESS_KEY_ID',
-                secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
-            ]]) {
-
-                steps {
-                script {
-                    env.AMI_ID = sh(
-                        script: 'cat output.txt',
-                        returnStdout: true
-                    ).trim()
-
-                    // Write fleets JSON to file
-                    writeFile file: 'fleets.json', text: params.FLEETS
-
-                    int batchSize = 2
-                    int index = 0
-
-                    while (true) {
-                        def batch = sh(
-                            script: """
-                              jq -c '.[$index:$index+$batchSize][]' fleets.json
-                            """,
+            steps {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aditya-demo',
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                ]]) {
+                    script {
+                        env.AMI_ID = sh(
+                            script: 'cat output.txt',
                             returnStdout: true
                         ).trim()
 
-                        if (!batch) {
-                            break
-                        }
+                        // Write fleets JSON to file
+                        writeFile file: 'fleets.json', text: params.FLEETS
 
-                        def parallelJobs = [:]
+                        int batchSize = 2
+                        int index = 0
 
-                        batch.split("\\n").each { line ->
-                            def asg = sh(
-                                script: "echo '${line}' | jq -r .asg",
+                        while (true) {
+                            def batch = sh(
+                                script: """
+                                  jq -c '.[$index:$index+$batchSize][]' fleets.json
+                                """,
                                 returnStdout: true
                             ).trim()
 
-                            def lt = sh(
-                                script: "echo '${line}' | jq -r .lt",
-                                returnStdout: true
-                            ).trim()
-
-                            def warmPool = sh(
-                                script: "echo '${line}' | jq -r .warm_pool",
-                                returnStdout: true
-                            ).trim().toInteger()
-
-                            parallelJobs["Deploy-${asg}"] = {
-                                deployToASG(asg, lt, warmPool)
+                            if (!batch) {
+                                break
                             }
-                        }
 
-                        parallel parallelJobs
-                        index += batchSize
+                            def parallelJobs = [:]
+
+                            batch.split("\\n").each { line ->
+                                def asg = sh(
+                                    script: "echo '${line}' | jq -r .asg",
+                                    returnStdout: true
+                                ).trim()
+
+                                def lt = sh(
+                                    script: "echo '${line}' | jq -r .lt",
+                                    returnStdout: true
+                                ).trim()
+
+                                def warmPool = sh(
+                                    script: "echo '${line}' | jq -r .warm_pool",
+                                    returnStdout: true
+                                ).trim().toInteger()
+
+                                parallelJobs["Deploy-${asg}"] = {
+                                    deployToASG(asg, lt, warmPool)
+                                }
+                            }
+
+                            parallel parallelJobs
+                            index += batchSize
+                        }
                     }
                 }
             }
-
-            }
-
         }
+
 
 
         stage('Copy Image To DR Region') {
