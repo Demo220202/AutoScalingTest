@@ -244,16 +244,26 @@ pipeline {
 
         stage('Terraform Init & Plan') {
             steps {
-                sh '''
-                  export CURL_IPRESOLVE=4
-                  terraform init
-                  terraform plan \
-                    -var "DATE=$DATE_TAG" \
-                    -var "INSTANCE_ID=$INSTANCE_ID" \
-                    -var "ASG_Region=$ASG_REGION"
-                '''
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aditya-demo',
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                ]]) {
+                    sh '''
+                      export AWS_DEFAULT_REGION=$ASG_REGION
+                      export AWS_EC2_METADATA_DISABLED=true
+
+                      terraform init
+                      terraform plan \
+                        -var "DATE=$DATE_TAG" \
+                        -var "INSTANCE_ID=$INSTANCE_ID" \
+                        -var "ASG_Region=$ASG_REGION"
+                    '''
+                }
             }
         }
+
 
         stage('Approval') {
             steps {
@@ -263,20 +273,38 @@ pipeline {
 
         stage('Terraform Apply (AMI Creation)') {
             steps {
-                sh '''
-                  export CURL_IPRESOLVE=4
-                  terraform apply --auto-approve \
-                    -var "DATE=$DATE_TAG" \
-                    -var "INSTANCE_ID=$INSTANCE_ID" \
-                    -var "ASG_Region=$ASG_REGION"
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aditya-demo',
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                ]]) {
+                    sh '''
+                      export AWS_DEFAULT_REGION=$ASG_REGION
+                      export AWS_EC2_METADATA_DISABLED=true
 
-                  terraform output -raw autoscaling_id > output.txt
-                '''
+                      terraform apply --auto-approve \
+                        -var "DATE=$DATE_TAG" \
+                        -var "INSTANCE_ID=$INSTANCE_ID" \
+                        -var "ASG_Region=$ASG_REGION"
+
+                      terraform output -raw autoscaling_id > output.txt
+                    '''
+                }
             }
         }
 
+
         stage('Deploy AMI to Fleets (Parallel)') {
-            steps {
+
+            withCredentials([[
+                $class: 'AmazonWebServicesCredentialsBinding',
+                credentialsId: 'aditya-demo',
+                accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+            ]]) {
+
+                steps {
                 script {
                     env.AMI_ID = sh(
                         script: 'cat output.txt',
@@ -329,20 +357,33 @@ pipeline {
                     }
                 }
             }
+
+            }
+
         }
 
 
         stage('Copy Image To DR Region') {
             steps {
-                sh '''
-                  aws ec2 copy-image \
-                    --region $DR_REGION \
-                    --name "ami-$DATE_TAG" \
-                    --source-region $ASG_REGION \
-                    --source-image-id $AMI_ID
-                '''
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aditya-demo',
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                ]]) {
+                    sh '''
+                      export AWS_DEFAULT_REGION=$ASG_REGION
+
+                      aws ec2 copy-image \
+                        --region $DR_REGION \
+                        --name "ami-$DATE_TAG" \
+                        --source-region $ASG_REGION \
+                        --source-image-id $AMI_ID
+                    '''
+                }
             }
         }
+
     }
 
     post {
