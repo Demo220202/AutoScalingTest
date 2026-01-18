@@ -249,6 +249,7 @@ pipeline {
         stage('Terraform Init & Plan') {
             steps {
                 sh '''
+                  export CURL_IPRESOLVE=4
                   terraform init
                   terraform plan \
                     -var "DATE=$DATE_TAG" \
@@ -267,6 +268,7 @@ pipeline {
         stage('Terraform Apply (AMI Creation)') {
             steps {
                 sh '''
+                  export CURL_IPRESOLVE=4
                   terraform apply --auto-approve \
                     -var "DATE=$DATE_TAG" \
                     -var "INSTANCE_ID=$INSTANCE_ID" \
