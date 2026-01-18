@@ -284,7 +284,7 @@ pipeline {
                 script {
                     env.AMI_ID = sh(returnStdout: true, script: 'cat output.txt').trim()
 
-                    def fleets = readJSON text: params.FLEETS
+                    def fleets = new groovy.json.JsonSlurper().parseText(params.FLEETS)
                     def parallelJobs = [:]
 
                     for (int i = 0; i < fleets.size(); i++) {
