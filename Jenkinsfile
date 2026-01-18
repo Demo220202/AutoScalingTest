@@ -220,12 +220,12 @@ pipeline {
             name: 'FLEETS',
             description: 'Fleet configuration JSON',
             defaultValue: '''
-[
-  { "asg": "zen-prod-streaming-asg", "lt": "lt-zen-prod-streaming", "warm_pool": 2 },
-  { "asg": "zen-prod-platform-asg", "lt": "launchtemplate-zen-prod-platform", "warm_pool": 3 }
-]
-'''
-        ),
+                [
+                  { "asg": "zen-prod-streaming-asg", "lt": "lt-zen-prod-streaming", "warm_pool": 2 },
+                  { "asg": "zen-prod-platform-asg", "lt": "launchtemplate-zen-prod-platform", "warm_pool": 3 }
+                ]
+            '''
+        )
         booleanParam(
             name: 'SKIP_HEALTHCHECK',
             defaultValue: true,
