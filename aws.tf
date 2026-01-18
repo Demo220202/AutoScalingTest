@@ -1,6 +1,6 @@
 provider "aws" {
   region = var.ASG_Region
-  profile = "Aditya-demo"
+  # profile = "Aditya-demo"
 }
 resource "aws_ami_from_instance" "autoscaling" {
   name               = "pf-test-${var.DATE}"
