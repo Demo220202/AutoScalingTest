@@ -220,11 +220,11 @@ pipeline {
             name: 'FLEETS',
             description: 'Fleet configuration JSON',
             defaultValue: '''
-                [
-                  { "asg": "zen-prod-streaming-asg", "lt": "lt-zen-prod-streaming", "warm_pool": 2 },
-                  { "asg": "zen-prod-platform-asg", "lt": "launchtemplate-zen-prod-platform", "warm_pool": 3 }
-                ]
-            '''
+[
+  { "asg": "zen-prod-streaming-asg", "lt": "lt-zen-prod-streaming", "warm_pool": 2 },
+  { "asg": "zen-prod-platform-asg", "lt": "launchtemplate-zen-prod-platform", "warm_pool": 3 }
+]
+'''
         )
         booleanParam(
             name: 'SKIP_HEALTHCHECK',
@@ -239,10 +239,6 @@ pipeline {
         SleepDuration = 20
         DATE_TAG = "$BUILD_TIMESTAMP"
     }
-
-//     tools {
-//         terraform 'Terraform_1.5.7'
-//     }
 
     stages {
 
@@ -282,33 +278,39 @@ pipeline {
         stage('Deploy AMI to Fleets (Parallel)') {
             steps {
                 script {
-                    env.AMI_ID = sh(returnStdout: true, script: 'cat output.txt').trim()
+                    // Read AMI ID
+                    env.AMI_ID = sh(
+                        script: 'cat output.txt',
+                        returnStdout: true
+                    ).trim()
 
-                    def fleets = new groovy.json.JsonSlurper().parseText(params.FLEETS)
-                    def parallelJobs = [:]
+                    // SAFE JSON parsing for Jenkins
+                    def slurper = new groovy.json.JsonSlurperClassic()
+                    def fleets = slurper.parseText(params.FLEETS)
 
-                    for (int i = 0; i < fleets.size(); i++) {
-                        def fleet = fleets[i]   // IMPORTANT (Groovy closure rule)
+                    int batchSize = 2
+                    int index = 0
 
-                        parallelJobs["Deploy-${fleet.asg}"] = {
-                            deployToASG(
-                                fleet.asg,
-                                fleet.lt,
-                                fleet.warm_pool as int
-                            )
+                    while (index < fleets.size()) {
+                        def parallelJobs = [:]
+
+                        for (int i = index; i < Math.min(index + batchSize, fleets.size()); i++) {
+                            def fleet = fleets[i]
+                            def asgName = fleet.asg
+                            def ltName = fleet.lt
+                            def warmPool = fleet.warm_pool as int
+
+                            parallelJobs["Deploy-${asgName}"] = {
+                                deployToASG(asgName, ltName, warmPool)
+                            }
                         }
+
+                        parallel parallelJobs
+                        index += batchSize
                     }
-
-                    def batchSize = 2
-                    parallelJobs
-                        .collate(batchSize)
-                        .each { batch ->
-                            parallel batch.collectEntries { it }
-                        }
                 }
             }
         }
-
 
         stage('Copy Image To DR Region') {
             steps {
@@ -329,3 +331,4 @@ pipeline {
         }
     }
 }
+
