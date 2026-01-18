@@ -278,30 +278,49 @@ pipeline {
         stage('Deploy AMI to Fleets (Parallel)') {
             steps {
                 script {
-                    // Read AMI ID
                     env.AMI_ID = sh(
                         script: 'cat output.txt',
                         returnStdout: true
                     ).trim()
 
-                    // SAFE JSON parsing for Jenkins
-                    def slurper = new groovy.json.JsonSlurperClassic()
-                    def fleets = slurper.parseText(params.FLEETS)
+                    // Write fleets JSON to file
+                    writeFile file: 'fleets.json', text: params.FLEETS
 
                     int batchSize = 2
                     int index = 0
 
-                    while (index < fleets.size()) {
+                    while (true) {
+                        def batch = sh(
+                            script: """
+                              jq -c '.[$index:$index+$batchSize][]' fleets.json
+                            """,
+                            returnStdout: true
+                        ).trim()
+
+                        if (!batch) {
+                            break
+                        }
+
                         def parallelJobs = [:]
 
-                        for (int i = index; i < Math.min(index + batchSize, fleets.size()); i++) {
-                            def fleet = fleets[i]
-                            def asgName = fleet.asg
-                            def ltName = fleet.lt
-                            def warmPool = fleet.warm_pool as int
+                        batch.split("\\n").each { line ->
+                            def asg = sh(
+                                script: "echo '${line}' | jq -r .asg",
+                                returnStdout: true
+                            ).trim()
 
-                            parallelJobs["Deploy-${asgName}"] = {
-                                deployToASG(asgName, ltName, warmPool)
+                            def lt = sh(
+                                script: "echo '${line}' | jq -r .lt",
+                                returnStdout: true
+                            ).trim()
+
+                            def warmPool = sh(
+                                script: "echo '${line}' | jq -r .warm_pool",
+                                returnStdout: true
+                            ).trim().toInteger()
+
+                            parallelJobs["Deploy-${asg}"] = {
+                                deployToASG(asg, lt, warmPool)
                             }
                         }
 
@@ -311,6 +330,7 @@ pipeline {
                 }
             }
         }
+
 
         stage('Copy Image To DR Region') {
             steps {
