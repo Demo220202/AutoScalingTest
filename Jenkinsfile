@@ -107,24 +107,28 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
         """
 
         /* ---------- EC2 Health ---------- */
-        timeout(time: 10, unit: 'MINUTES') {
-            while (true) {
-                sleep env.SleepDuration.toInteger()
+        if (!params.SKIP_HEALTHCHECK) {
+            timeout(time: 10, unit: 'MINUTES') {
+                while (true) {
+                    sleep env.SleepDuration.toInteger()
 
-                def healthy = sh(
-                    returnStdout: true,
-                    script: """
-                      aws autoscaling describe-auto-scaling-groups \
-                        --auto-scaling-group-names ${ASG_NAME} \
-                        --region ${ASG_REGION} |
-                      jq '[.AutoScalingGroups[0].Instances[] |
-                          select(.HealthStatus=="Healthy" and .LifecycleState=="InService")] | length'
-                    """
-                ).trim().toInteger()
+                    def healthy = sh(
+                        returnStdout: true,
+                        script: """
+                          aws autoscaling describe-auto-scaling-groups \
+                            --auto-scaling-group-names ${ASG_NAME} \
+                            --region ${ASG_REGION} |
+                          jq '[.AutoScalingGroups[0].Instances[] |
+                              select(.HealthStatus=="Healthy" and .LifecycleState=="InService")] | length'
+                        """
+                    ).trim().toInteger()
 
-                echo "EC2 Healthy: ${healthy}/${ASG_new_desired}"
-                if (healthy >= ASG_new_desired) break
+                    echo "EC2 Healthy: ${healthy}/${ASG_new_desired}"
+                    if (healthy >= ASG_new_desired) break
+                }
             }
+        } else {
+            echo "SKIPPING EC2 health check (test mode)"
         }
 
         /* ---------- Target Group Health ---------- */
@@ -138,7 +142,7 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
             """
         ).trim()
 
-        if (TG_ARN) {
+        if (TG_ARN && !params.SKIP_HEALTHCHECK) {
             timeout(time: 10, unit: 'MINUTES') {
                 while (true) {
                     sleep env.SleepDuration.toInteger()
@@ -158,7 +162,10 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
                     if (TG_Healthy >= ASG_new_desired) break
                 }
             }
+        } else if (TG_ARN) {
+            echo "⚠️ SKIPPING Target Group health check (test mode)"
         }
+
 
     } catch (err) {
         rollback = true
@@ -218,6 +225,11 @@ pipeline {
   { "asg": "zen-prod-platform-asg", "lt": "launchtemplate-zen-prod-platform", "warm_pool": 3 }
 ]
 '''
+        ),
+        booleanParam(
+            name: 'SKIP_HEALTHCHECK',
+            defaultValue: true,
+            description: 'Skip ASG & Target Group health checks (testing only)'
         )
     }
 
