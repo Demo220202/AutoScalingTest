@@ -280,11 +280,11 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
 
         /* ---------- Ensure no refresh running ---------- */
 
-        sh """
-          aws autoscaling cancel-instance-refresh \
-            --auto-scaling-group-name ${ASG_NAME} \
-            --region ${ASG_REGION} || true
-        """
+//         sh """
+//           aws autoscaling cancel-instance-refresh \
+//             --auto-scaling-group-name ${ASG_NAME} \
+//             --region ${ASG_REGION} || true
+//         """
 
         sleep 30
 
@@ -373,7 +373,7 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
     /* ---------- Rollback ---------- */
 
     if (rollbackRequired) {
-        echo "⚠️ Rolling back ${ASG_NAME}"
+        echo "Rolling back ${ASG_NAME}"
 
         sh """
           aws autoscaling cancel-instance-refresh \
