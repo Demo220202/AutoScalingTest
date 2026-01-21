@@ -8,6 +8,7 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
     def ORIGINAL_LT_VERSION = ""
     def NEW_LT_VERSION = ""
     def ORIGINAL_INSTANCES = []
+    def DESIRED_CAPACITY = 0
 
     try {
         echo "============================================"
@@ -25,6 +26,17 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
               jq -r '.AutoScalingGroups[0].Instances[].InstanceId'
             """
         ).trim().split("\\n")
+
+        DESIRED_CAPACITY = sh(
+            returnStdout: true,
+            script: """
+              aws autoscaling describe-auto-scaling-groups \
+                --auto-scaling-group-names ${ASG_NAME} \
+                --region ${ASG_REGION} \
+                --query 'AutoScalingGroups[0].DesiredCapacity' \
+                --output text
+            """
+        ).trim().toInteger()
 
         /* ---------- Launch Template ---------- */
 
@@ -64,18 +76,33 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
             --region ${ASG_REGION}
         """
 
-        sleep 30
+        /* ---------- Remove scale-in protection ---------- */
 
+        sh """
+          aws autoscaling update-auto-scaling-group \
+            --auto-scaling-group-name ${ASG_NAME} \
+            --new-instances-protected-from-scale-in false \
+            --region ${ASG_REGION}
+        """
 
-        /* ---------- Start refresh ---------- */
+        sleep 15
+
+        /* ---------- Start refresh (FAST + SAFE) ---------- */
 
         def minHealthy = 50
         def maxHealthy = 150
-        def warmup     = 300
+        def warmup     = 90
+
+        // Faster replacement for small ASGs
+        if (DESIRED_CAPACITY <= 3) {
+            minHealthy = 0
+            maxHealthy = 100
+        }
 
         sh """
           aws autoscaling start-instance-refresh \
             --auto-scaling-group-name ${ASG_NAME} \
+            --strategy Rolling \
             --preferences MinHealthyPercentage=${minHealthy},MaxHealthyPercentage=${maxHealthy},InstanceWarmup=${warmup} \
             --region ${ASG_REGION}
         """
@@ -87,7 +114,6 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
             while (true) {
                 sleep env.SleepDuration.toInteger()
 
-                // Fetch instance refresh status
                 def refreshStatus = sh(
                     returnStdout: true,
                     script: """
@@ -101,11 +127,9 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
 
                 echo "Instance refresh status: ${refreshStatus}"
 
-                // Fail fast on terminal bad states
                 if (refreshStatus in ['Failed', 'Cancelled']) {
                     error "Instance refresh ${refreshStatus} for ${ASG_NAME}"
                 }
-
 
                 def oldLtInstances = sh(
                     returnStdout: true,
@@ -121,19 +145,10 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
                     """
                 ).trim().toInteger()
 
-                def totalInstances = sh(
-                    returnStdout: true,
-                    script: """
-                      aws autoscaling describe-auto-scaling-groups \
-                        --auto-scaling-group-names ${ASG_NAME} \
-                        --region ${ASG_REGION} |
-                      jq '.AutoScalingGroups[0].Instances | length'
-                    """
-                ).trim().toInteger()
+                def replaced = DESIRED_CAPACITY - oldLtInstances
+                if (replaced < 0) { replaced = 0 }
 
-                def replaced = totalInstances - oldLtInstances
-
-                echo "Replacement progress: ${replaced}/${totalInstances} instances updated"
+                echo "Replacement progress: ${replaced}/${DESIRED_CAPACITY} instances updated"
 
                 if (refreshStatus == 'Successful' || oldLtInstances == 0) {
                     echo "All instances running latest launch template"
@@ -181,6 +196,7 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
         error "Rollback completed for ${ASG_NAME}"
     }
 }
+
 
 
 pipeline {
