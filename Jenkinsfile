@@ -81,9 +81,10 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
         sh """
           aws autoscaling update-auto-scaling-group \
             --auto-scaling-group-name ${ASG_NAME} \
-            --new-instances-protected-from-scale-in false \
+            --no-new-instances-protected-from-scale-in \
             --region ${ASG_REGION}
         """
+
 
         sleep 15
 
