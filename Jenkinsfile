@@ -86,6 +86,26 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
             while (true) {
                 sleep env.SleepDuration.toInteger()
 
+                // Fetch instance refresh status
+                def refreshStatus = sh(
+                    returnStdout: true,
+                    script: """
+                      aws autoscaling describe-instance-refreshes \
+                        --auto-scaling-group-name ${ASG_NAME} \
+                        --region ${ASG_REGION} \
+                        --query 'InstanceRefreshes[0].Status' \
+                        --output text
+                    """
+                ).trim()
+
+                echo "Instance refresh status: ${refreshStatus}"
+
+                // Fail fast on terminal bad states
+                if (refreshStatus in ['Failed', 'Cancelled']) {
+                    error "Instance refresh ${refreshStatus} for ${ASG_NAME}"
+                }
+
+
                 def oldLtInstances = sh(
                     returnStdout: true,
                     script: """
@@ -114,7 +134,7 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
 
                 echo "Replacement progress: ${replaced}/${totalInstances} instances updated"
 
-                if (oldLtInstances == 0) {
+                if (refreshStatus == 'Successful' || oldLtInstances == 0) {
                     echo "All instances running latest launch template"
                     break
                 }
