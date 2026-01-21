@@ -70,7 +70,7 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
         /* ---------- Start refresh ---------- */
 
         def minHealthy = 50
-        def maxHealthy = 200
+        def maxHealthy = 150
         def warmup     = 300
 
         sh """
