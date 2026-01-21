@@ -172,7 +172,8 @@ pipeline {
             defaultValue: '''
 [
   { "asg": "zen-test-streaming-asg", "lt": "lt-zen-test-streaming", "warm_pool": 2 },
-  { "asg": "zen-test-platform-asg", "lt": "launchtemplate-zen-test-platform", "warm_pool": 3 }
+  { "asg": "zen-test-platform-asg", "lt": "launchtemplate-zen-test-platform", "warm_pool": 3 },
+  { "asg": "zen-test-platform-commit-log-asg", "lt": "lt-zen-test-platform-commit-log", "warm_pool": 2 }
 ]
 '''
         )
