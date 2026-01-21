@@ -284,7 +284,7 @@ pipeline {
                         // Write fleets JSON to file
                         writeFile file: 'fleets.json', text: params.FLEETS
 
-                        int batchSize = 2
+                        int batchSize = 3
                         int index = 0
 
                         while (true) {
