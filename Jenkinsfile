@@ -205,8 +205,8 @@ pipeline {
     }
 
     environment {
-//         GODEBUG = "netdns=go"
-//         PATH = "/opt/homebrew/bin:${env.PATH}"
+        GODEBUG = "netdns=go"
+        PATH = "/opt/homebrew/bin:${env.PATH}"
         SleepDuration = 20
         DATE_TAG = "$BUILD_TIMESTAMP"
     }
