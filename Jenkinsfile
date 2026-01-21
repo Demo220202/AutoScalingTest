@@ -70,12 +70,13 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
         /* ---------- Start refresh ---------- */
 
         def minHealthy = 50
+        def maxHealthy = 200
         def warmup     = 300
 
         sh """
           aws autoscaling start-instance-refresh \
             --auto-scaling-group-name ${ASG_NAME} \
-            --preferences MinHealthyPercentage=${minHealthy},InstanceWarmup=${warmup} \
+            --preferences MinHealthyPercentage=${minHealthy},MaxHealthyPercentage=${maxHealthy},InstanceWarmup=${warmup} \
             --region ${ASG_REGION}
         """
 
