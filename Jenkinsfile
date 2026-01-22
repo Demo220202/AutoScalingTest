@@ -269,7 +269,7 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
             """
         ).trim().toInteger()
 
-        /* ---------- Capture ASG Launch Template Version (CRITICAL) ---------- */
+        /* ---------- Resolve ASG Launch Template Version ---------- */
 
         def ASG_LT_VERSION_RAW = sh(
             returnStdout: true,
@@ -310,7 +310,6 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
 
         echo "Resolved ASG ${ASG_NAME} LT version: ${ORIGINAL_ASG_LT_VERSION}"
 
-
         /* ---------- Create new Launch Template version ---------- */
 
         sh """
@@ -334,7 +333,7 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
 
         echo "New launch template version created: ${NEW_LT_VERSION}"
 
-        /* ---------- Pin ASG to new Launch Template version ---------- */
+        /* ---------- Pin ASG to new Launch Template ---------- */
 
         sh """
           aws autoscaling update-auto-scaling-group \
@@ -354,7 +353,7 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
 
         sleep 15
 
-        /* ---------- Start refresh (FAST + SAFE) ---------- */
+        /* ---------- Instance Refresh ---------- */
 
         def minHealthy = 25
         def maxHealthy = 125
@@ -365,16 +364,33 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
             maxHealthy = 100
         }
 
+        /* ---------- Safe warm pool deletion ---------- */
+
         if (warmPoolSize > 0) {
-            echo "Ensuring warm pool is removed for ${ASG_NAME}"
-            sh """
-              set +e
-              aws autoscaling delete-warm-pool \
-                --auto-scaling-group-name ${ASG_NAME} \
-                --force-delete \
-                --region ${ASG_REGION}
-              exit 0
-            """
+            echo "Checking if warm pool exists for ${ASG_NAME}"
+
+            def warmPoolExists = sh(
+                returnStdout: true,
+                script: """
+                  aws autoscaling describe-warm-pool \
+                    --auto-scaling-group-name ${ASG_NAME} \
+                    --region ${ASG_REGION} \
+                    --query 'WarmPoolConfiguration' \
+                    --output text 2>/dev/null || echo NONE
+                """
+            ).trim()
+
+            if (warmPoolExists != "NONE" && warmPoolExists != "None") {
+                echo "Warm pool exists for ${ASG_NAME}, deleting it"
+                sh """
+                  aws autoscaling delete-warm-pool \
+                    --auto-scaling-group-name ${ASG_NAME} \
+                    --force-delete \
+                    --region ${ASG_REGION}
+                """
+            } else {
+                echo "No warm pool found for ${ASG_NAME}, skipping delete"
+            }
         }
 
         sh """
@@ -453,6 +469,7 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
         error "Rollback completed for ${ASG_NAME}"
     }
 }
+
 
 
 
