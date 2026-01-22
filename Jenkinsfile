@@ -90,9 +90,9 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
 
         /* ---------- Start refresh (FAST + SAFE) ---------- */
 
-        def minHealthy = 50
-        def maxHealthy = 150
-        def warmup     = 90
+        def minHealthy = 25
+        def maxHealthy = 125
+        def warmup     = 30
 
         // Faster replacement for small ASGs
         if (DESIRED_CAPACITY <= 3) {
