@@ -271,7 +271,7 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
 
         /* ---------- Capture ASG Launch Template Version (CRITICAL) ---------- */
 
-        ORIGINAL_ASG_LT_VERSION = sh(
+        def ASG_LT_VERSION_RAW = sh(
             returnStdout: true,
             script: """
               aws autoscaling describe-auto-scaling-groups \
@@ -282,7 +282,34 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
             """
         ).trim()
 
-        echo "ASG ${ASG_NAME} originally using LT version: ${ORIGINAL_ASG_LT_VERSION}"
+        if (ASG_LT_VERSION_RAW == '$Latest') {
+            ORIGINAL_ASG_LT_VERSION = sh(
+                returnStdout: true,
+                script: """
+                  aws ec2 describe-launch-template-versions \
+                    --launch-template-name ${LT_NAME} \
+                    --region ${ASG_REGION} \
+                    --query 'LaunchTemplateVersions | max_by(.VersionNumber).VersionNumber' \
+                    --output text
+                """
+            ).trim()
+        } else if (ASG_LT_VERSION_RAW == '$Default') {
+            ORIGINAL_ASG_LT_VERSION = sh(
+                returnStdout: true,
+                script: """
+                  aws ec2 describe-launch-templates \
+                    --launch-template-names ${LT_NAME} \
+                    --region ${ASG_REGION} \
+                    --query 'LaunchTemplates[0].DefaultVersionNumber' \
+                    --output text
+                """
+            ).trim()
+        } else {
+            ORIGINAL_ASG_LT_VERSION = ASG_LT_VERSION_RAW
+        }
+
+        echo "Resolved ASG ${ASG_NAME} LT version: ${ORIGINAL_ASG_LT_VERSION}"
+
 
         /* ---------- Create new Launch Template version ---------- */
 
