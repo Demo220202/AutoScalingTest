@@ -6,7 +6,6 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
 
     def ORIGINAL_ASG_LT_VERSION = ""
     def NEW_LT_VERSION = ""
-    def ORIGINAL_INSTANCES = []
     def DESIRED_CAPACITY = 0
 
     try {
@@ -14,17 +13,7 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
         echo "Deploying AMI ${env.AMI_ID} to ${ASG_NAME}"
         echo "============================================"
 
-        /* ---------- Capture ASG state ---------- */
-
-        ORIGINAL_INSTANCES = sh(
-            returnStdout: true,
-            script: """
-              aws autoscaling describe-auto-scaling-groups \
-                --auto-scaling-group-names ${ASG_NAME} \
-                --region ${ASG_REGION} |
-              jq -r '.AutoScalingGroups[0].Instances[].InstanceId'
-            """
-        ).trim().split("\\n")
+        /* ---------- Capture ASG capacity ---------- */
 
         DESIRED_CAPACITY = sh(
             returnStdout: true,
@@ -76,13 +65,13 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
             ORIGINAL_ASG_LT_VERSION = ASG_LT_VERSION_RAW
         }
 
-        if (!ORIGINAL_ASG_LT_VERSION?.trim()) {
+        if (!ORIGINAL_ASG_LT_VERSION) {
             error "Failed to resolve original LT version for ${ASG_NAME}"
         }
 
-        echo "Resolved ASG ${ASG_NAME} LT version: ${ORIGINAL_ASG_LT_VERSION}"
+        echo "Resolved ASG LT version: ${ORIGINAL_ASG_LT_VERSION}"
 
-        /* ---------- Create new Launch Template version ---------- */
+        /* ---------- Create new LT version ---------- */
 
         sh """
           aws ec2 create-launch-template-version \
@@ -104,13 +93,9 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
             """
         ).trim()
 
-        if (!NEW_LT_VERSION?.trim()) {
-            error "Failed to determine new LT version for ${ASG_NAME}"
-        }
+        echo "New LT version: ${NEW_LT_VERSION}"
 
-        echo "New launch template version created: ${NEW_LT_VERSION}"
-
-        /* ---------- Pin ASG to new Launch Template ---------- */
+        /* ---------- Pin ASG to new LT ---------- */
 
         sh """
           aws autoscaling update-auto-scaling-group \
@@ -130,40 +115,22 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
 
         sleep 15
 
-        /* ---------- Instance Refresh ---------- */
-
-        def minHealthy = 25
-        def maxHealthy = 125
-        def warmup     = 30
-
-        if (DESIRED_CAPACITY <= 3) {
-            minHealthy = 0
-            maxHealthy = 100
-        }
-
-        /* ---------- Safe warm pool deletion ---------- */
+        /* ---------- Warm pool safe delete ---------- */
 
         if (warmPoolSize > 0) {
-            def warmPoolExists = sh(
-                returnStdout: true,
-                script: """
-                  aws autoscaling describe-warm-pool \
-                    --auto-scaling-group-name ${ASG_NAME} \
-                    --region ${ASG_REGION} \
-                    --query 'WarmPoolConfiguration' \
-                    --output text 2>/dev/null || echo NONE
-                """
-            ).trim()
-
-            if (warmPoolExists != "NONE" && warmPoolExists != "None") {
-                sh """
-                  aws autoscaling delete-warm-pool \
-                    --auto-scaling-group-name ${ASG_NAME} \
-                    --force-delete \
-                    --region ${ASG_REGION}
-                """
-            }
+            sh """
+              aws autoscaling delete-warm-pool \
+                --auto-scaling-group-name ${ASG_NAME} \
+                --force-delete \
+                --region ${ASG_REGION} || true
+            """
         }
+
+        /* ---------- Instance Refresh ---------- */
+
+        def minHealthy = (DESIRED_CAPACITY <= 3) ? 0 : 25
+        def maxHealthy = (DESIRED_CAPACITY <= 3) ? 100 : 125
+        def warmup = 30
 
         sh """
           aws autoscaling start-instance-refresh \
@@ -173,7 +140,7 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
             --region ${ASG_REGION}
         """
 
-        /* ---------- Progress Tracking ---------- */
+        /* ---------- REAL progress tracking (from Script 1) ---------- */
 
         timeout(time: 30, unit: 'MINUTES') {
             while (true) {
@@ -190,12 +157,35 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
                     """
                 ).trim()
 
-                if (refreshStatus == 'Successful') break
+                def oldLtCount = sh(
+                    returnStdout: true,
+                    script: """
+                      aws autoscaling describe-auto-scaling-groups \
+                        --auto-scaling-group-names ${ASG_NAME} \
+                        --region ${ASG_REGION} |
+                      jq -r '
+                        .AutoScalingGroups[0].Instances[]
+                        | select(.LaunchTemplate.Version=="${ORIGINAL_ASG_LT_VERSION}")
+                        | .InstanceId
+                      ' | wc -l
+                    """
+                ).trim().toInteger()
+
+                def replaced = Math.max(0, DESIRED_CAPACITY - oldLtCount)
+                echo "Refresh: ${refreshStatus} | Replaced ${replaced}/${DESIRED_CAPACITY}"
+
+                if (refreshStatus == 'Successful' || oldLtCount == 0) {
+                    echo "All instances now on LT ${NEW_LT_VERSION}"
+                    break
+                }
+
                 if (refreshStatus in ['Failed', 'Cancelled']) {
-                    error "Instance refresh ${refreshStatus} for ${ASG_NAME}"
+                    error "Instance refresh ${refreshStatus}"
                 }
             }
         }
+
+        /* ---------- Restore warm pool ---------- */
 
         if (warmPoolSize > 0) {
             sh """
@@ -210,12 +200,12 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
 
     } catch (err) {
         rollbackRequired = true
-        echo "Deployment failed for ${ASG_NAME}: ${err}"
+        echo "Deployment failed: ${err}"
     }
 
     /* ---------- Rollback ---------- */
 
-    if (rollbackRequired && ORIGINAL_ASG_LT_VERSION?.trim()) {
+    if (rollbackRequired && ORIGINAL_ASG_LT_VERSION) {
         sh """
           aws autoscaling cancel-instance-refresh \
             --auto-scaling-group-name ${ASG_NAME} \
@@ -232,6 +222,7 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
         error "Rollback completed for ${ASG_NAME}"
     }
 }
+
 
 
 
