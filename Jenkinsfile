@@ -170,10 +170,16 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
 //
 //                 echo "Replacement progress: ${replaced}/${DESIRED_CAPACITY} instances updated"
 
-                if (refreshStatus == 'Successful' || oldLtInstances == 0) {
+//                 if (refreshStatus == 'Successful' || oldLtInstances == 0) {
+//                     echo "All instances running latest launch template"
+//                     break
+//                 }
+
+                if (refreshStatus == 'Successful') {
                     echo "All instances running latest launch template"
                     break
                 }
+
             }
         }
 
