@@ -112,7 +112,8 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
             sh """
               aws autoscaling delete-warm-pool \
                 --auto-scaling-group-name ${ASG_NAME} \
-                --region ${ASG_REGION}
+                --force-delete \
+                --region ${ASG_REGION} || true
             """
         }
 
