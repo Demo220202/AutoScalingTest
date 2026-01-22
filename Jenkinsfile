@@ -109,27 +109,20 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
 
 
         if (warmPoolSize > 0) {
-            def warmPoolExists = sh(
-                returnStatus: true,
-                script: """
-                  aws autoscaling describe-warm-pool \
-                    --auto-scaling-group-name ${ASG_NAME} \
-                    --region ${ASG_REGION} > /dev/null 2>&1
-                """
-            ) == 0
+            echo "Ensuring warm pool is removed for ${ASG_NAME}"
 
-            if (warmPoolExists) {
-                echo "Warm pool exists for ${ASG_NAME}, deleting it"
-                sh """
+            sh(
+                script: """
+                  set +e
                   aws autoscaling delete-warm-pool \
                     --auto-scaling-group-name ${ASG_NAME} \
                     --force-delete \
                     --region ${ASG_REGION}
+                  exit 0
                 """
-            } else {
-                echo "No warm pool found for ${ASG_NAME}, skipping delete"
-            }
+            )
         }
+
 
 
 
