@@ -289,7 +289,7 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
                   aws ec2 describe-launch-template-versions \
                     --launch-template-name ${LT_NAME} \
                     --region ${ASG_REGION} \
-                    --query 'LaunchTemplateVersions | max_by(.VersionNumber).VersionNumber' \
+                    --query 'sort_by(LaunchTemplateVersions,&VersionNumber)[-1].VersionNumber' \
                     --output text
                 """
             ).trim()
@@ -306,6 +306,10 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
             ).trim()
         } else {
             ORIGINAL_ASG_LT_VERSION = ASG_LT_VERSION_RAW
+        }
+
+        if (!ORIGINAL_ASG_LT_VERSION?.trim()) {
+            error "Failed to resolve original LT version for ${ASG_NAME}"
         }
 
         echo "Resolved ASG ${ASG_NAME} LT version: ${ORIGINAL_ASG_LT_VERSION}"
@@ -326,10 +330,15 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
             script: """
               aws ec2 describe-launch-template-versions \
                 --launch-template-name ${LT_NAME} \
-                --region ${ASG_REGION} |
-              jq -r '.LaunchTemplateVersions | max_by(.VersionNumber).VersionNumber'
+                --region ${ASG_REGION} \
+                --query 'sort_by(LaunchTemplateVersions,&VersionNumber)[-1].VersionNumber' \
+                --output text
             """
         ).trim()
+
+        if (!NEW_LT_VERSION?.trim()) {
+            error "Failed to determine new LT version for ${ASG_NAME}"
+        }
 
         echo "New launch template version created: ${NEW_LT_VERSION}"
 
@@ -367,8 +376,6 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
         /* ---------- Safe warm pool deletion ---------- */
 
         if (warmPoolSize > 0) {
-            echo "Checking if warm pool exists for ${ASG_NAME}"
-
             def warmPoolExists = sh(
                 returnStdout: true,
                 script: """
@@ -381,15 +388,12 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
             ).trim()
 
             if (warmPoolExists != "NONE" && warmPoolExists != "None") {
-                echo "Warm pool exists for ${ASG_NAME}, deleting it"
                 sh """
                   aws autoscaling delete-warm-pool \
                     --auto-scaling-group-name ${ASG_NAME} \
                     --force-delete \
                     --region ${ASG_REGION}
                 """
-            } else {
-                echo "No warm pool found for ${ASG_NAME}, skipping delete"
             }
         }
 
@@ -418,19 +422,12 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
                     """
                 ).trim()
 
-                echo "Instance refresh status: ${refreshStatus}"
-
+                if (refreshStatus == 'Successful') break
                 if (refreshStatus in ['Failed', 'Cancelled']) {
                     error "Instance refresh ${refreshStatus} for ${ASG_NAME}"
                 }
-
-                if (refreshStatus == 'Successful') {
-                    break
-                }
             }
         }
-
-        /* ---------- Restore warm pool ---------- */
 
         if (warmPoolSize > 0) {
             sh """
@@ -450,9 +447,7 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
 
     /* ---------- Rollback ---------- */
 
-    if (rollbackRequired) {
-        echo "Rolling back ${ASG_NAME} to LT version ${ORIGINAL_ASG_LT_VERSION}"
-
+    if (rollbackRequired && ORIGINAL_ASG_LT_VERSION?.trim()) {
         sh """
           aws autoscaling cancel-instance-refresh \
             --auto-scaling-group-name ${ASG_NAME} \
@@ -469,6 +464,7 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
         error "Rollback completed for ${ASG_NAME}"
     }
 }
+
 
 
 
