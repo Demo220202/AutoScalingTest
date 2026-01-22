@@ -90,15 +90,33 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
 
         /* ---------- Start refresh (FAST + SAFE) ---------- */
 
-        def minHealthy = 50
-        def maxHealthy = 150
+        def minHealthy = 25
+        def maxHealthy = 125
         def warmup     = 90
 
         // Faster replacement for small ASGs
         if (DESIRED_CAPACITY <= 3) {
+            // FAST MODE (small ASG)
             minHealthy = 0
             maxHealthy = 100
+            warmup     = 30
+        } else {
+            // FAST but SAFE
+            minHealthy = 25
+            maxHealthy = 125
+            warmup     = 30
         }
+
+
+        if (warmPoolSize > 0) {
+            sh """
+              aws autoscaling delete-warm-pool \
+                --auto-scaling-group-name ${ASG_NAME} \
+                --region ${ASG_REGION}
+            """
+        }
+
+
 
         sh """
           aws autoscaling start-instance-refresh \
@@ -132,24 +150,24 @@ def deployToASG(String asgName, String ltName, int warmPoolSize) {
                     error "Instance refresh ${refreshStatus} for ${ASG_NAME}"
                 }
 
-                def oldLtInstances = sh(
-                    returnStdout: true,
-                    script: """
-                      aws autoscaling describe-auto-scaling-groups \
-                        --auto-scaling-group-names ${ASG_NAME} \
-                        --region ${ASG_REGION} |
-                      jq -r '
-                        .AutoScalingGroups[0].Instances[]
-                        | select(.LaunchTemplate.Version=="${ORIGINAL_LT_VERSION}")
-                        | .InstanceId
-                      ' | wc -l
-                    """
-                ).trim().toInteger()
-
-                def replaced = DESIRED_CAPACITY - oldLtInstances
-                if (replaced < 0) { replaced = 0 }
-
-                echo "Replacement progress: ${replaced}/${DESIRED_CAPACITY} instances updated"
+//                 def oldLtInstances = sh(
+//                     returnStdout: true,
+//                     script: """
+//                       aws autoscaling describe-auto-scaling-groups \
+//                         --auto-scaling-group-names ${ASG_NAME} \
+//                         --region ${ASG_REGION} |
+//                       jq -r '
+//                         .AutoScalingGroups[0].Instances[]
+//                         | select(.LaunchTemplate.Version=="${ORIGINAL_LT_VERSION}")
+//                         | .InstanceId
+//                       ' | wc -l
+//                     """
+//                 ).trim().toInteger()
+//
+//                 def replaced = DESIRED_CAPACITY - oldLtInstances
+//                 if (replaced < 0) { replaced = 0 }
+//
+//                 echo "Replacement progress: ${replaced}/${DESIRED_CAPACITY} instances updated"
 
                 if (refreshStatus == 'Successful' || oldLtInstances == 0) {
                     echo "All instances running latest launch template"
@@ -225,7 +243,7 @@ pipeline {
     environment {
         GODEBUG = "netdns=go"
         PATH = "/opt/homebrew/bin:${env.PATH}"
-        SleepDuration = 20
+        SleepDuration = 10
         DATE_TAG = "$BUILD_TIMESTAMP"
     }
 
